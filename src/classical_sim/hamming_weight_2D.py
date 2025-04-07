@@ -1,28 +1,34 @@
+from typing import cast
+
 import numpy as np
+from numpy.typing import NDArray
+
 import scipy
 
 from qiskit import QuantumCircuit, transpile
 from qiskit.quantum_info import random_clifford, Clifford
+from qiskit.circuit import Gate
 from qiskit.circuit.library import ZGate, RZGate
 from qiskit_aer import StatevectorSimulator
 
 import quimb.tensor as qtn
 from itertools import combinations
-from numba import njit,int64
+from numba import njit, int64
 from numba.typed.typedlist import List
 from numba.typed import Dict
 import matplotlib.pyplot as plt
 
-def list_to_int(x):
+def list_to_int(x: NDArray):
     return sum([x[i]*2**i for i in range(len(x))])
 
-def int_to_str(x,b=2,m=4):
+def int_to_str(x: int, b: int = 2, m: int = 4) -> str:
     ans=[]
     while x>0:
         ans.append(str(x%b))
         x//=b
     while len(ans)<m:
         ans.append('0')
+    # Note: reverses the bitstring
     # n=len(ans)
     # for i in range(n//2):
     #     t=ans[i]
@@ -30,7 +36,20 @@ def int_to_str(x,b=2,m=4):
     #     ans[n-i-1]=t
     return ''.join(ans)
 
-def hamming_ball(n,r,x):
+def hamming_ball(n: int, r: int, x: int) -> NDArray[np.int64]:
+    """
+    Parameters
+    ----------
+    n: number of bits in x
+
+    r: max hamming distance
+
+    x: bitstring
+
+    Returns
+    -------
+    An array of all bitstrings whose hamming distance to x is <= r
+    """
     ans=[]
     for i in range(r+1):
         for comb in combinations(list(range(n)),i):
@@ -40,26 +59,28 @@ def hamming_ball(n,r,x):
             ans.append(y)
     return np.array(ans,dtype=np.int64)
 
-def generate_RQC_gate_sequence(R,C,d):
-    gs=[]
-    gs_raw=[]
+def generate_RQC_gate_sequence(R: int, C: int, d: int) -> tuple[list[tuple[Clifford, tuple[int, int]]], list[tuple[NDArray[np.complex128], tuple[int, int]]]]:
+    gs: list[tuple[Clifford, tuple[int, int]]] =[]
+    gs_raw: list[tuple[NDArray[np.complex128], tuple[int, int]]] =[]
     while d>0:
         for offset in range(0,min(d,2,C-1)):
             for r in range(R):
                 for c in range(offset,C-1,2):
-                    gs.append([random_clifford(2),[r*C+c,r*C+(c+1)%C]])
-                    gs_raw.append([gs[-1][0].to_matrix(),[r*C+c,r*C+(c+1)%C]])
+                    cliff = random_clifford(2)
+                    gs.append((cliff, (r*C+c,r*C+(c+1)%C)))
+                    gs_raw.append((cast(NDArray[np.complex128], cliff.to_matrix()), (r*C+c,r*C+(c+1)%C)))
             d-=1
         for offset in range(0,min(d,2,R-1)):
             for c in range(C):
                 for r in range(offset,R-1,2):
-                    gs.append([random_clifford(2),[r*C+c,((r+1)%R)*C+c]])
-                    gs_raw.append([gs[-1][0].to_matrix(),[r*C+c,((r+1)%R)*C+c]])
+                    cliff = random_clifford(2)
+                    gs.append((cliff,(r*C+c,((r+1)%R)*C+c)))
+                    gs_raw.append((cast(NDArray[np.complex128], cliff.to_matrix()), (r*C+c,((r+1)%R)*C+c)))
             d-=1
     return gs,gs_raw
 
-def U_to_U_dagger_P_U(U,R,C,is_raw):
-    V=[]
+def U_to_U_dagger_P_U(U: list[tuple[Clifford | NDArray[np.complex128], tuple[int, int]]], R: int, C: int, is_raw: bool):
+    V: list[tuple[Gate | NDArray[np.complex128], tuple[int, int]]]=[]
     for gate,idx in U:
         V.append([gate if is_raw else gate.to_instruction(),idx])
     for r in range(R):
@@ -228,7 +249,7 @@ def hamming_weight_simulation(U,R,C,max_idx,theta,W):
         p_psi=np.array([abs(x)**2 for x in psi])
     for g in ZV:
         g[1]=list(reversed(g[1]))
-    zV0=compute_zV0(nn,ZV,int_to_str(max_idx,2,nn))
+    zV0=compute_zV0(nn,ZV,int_to_str(max_idx, b=2, m=nn))
     print(zV0,flush=True)
     max_non_zero=4*10**8
     bounds=compute_lightcone(ZV,R,C)
