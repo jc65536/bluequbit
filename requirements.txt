@@ -1,5 +1,6 @@
 bluequbit
 qiskit
+qiskit_aer
 quimb
 matplotlib
 python-dotenv

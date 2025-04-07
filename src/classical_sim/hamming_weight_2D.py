@@ -1,6 +1,11 @@
 import numpy as np
 import scipy
-import qiskit
+
+from qiskit import QuantumCircuit, transpile
+from qiskit.quantum_info import random_clifford, Clifford
+from qiskit.circuit.library import ZGate, RZGate
+from qiskit_aer import StatevectorSimulator
+
 import quimb.tensor as qtn
 from itertools import combinations
 from numba import njit,int64
@@ -42,13 +47,13 @@ def generate_RQC_gate_sequence(R,C,d):
         for offset in range(0,min(d,2,C-1)):
             for r in range(R):
                 for c in range(offset,C-1,2):
-                    gs.append([qiskit.quantum_info.random_clifford(2),[r*C+c,r*C+(c+1)%C]])
+                    gs.append([random_clifford(2),[r*C+c,r*C+(c+1)%C]])
                     gs_raw.append([gs[-1][0].to_matrix(),[r*C+c,r*C+(c+1)%C]])
             d-=1
         for offset in range(0,min(d,2,R-1)):
             for c in range(C):
                 for r in range(offset,R-1,2):
-                    gs.append([qiskit.quantum_info.random_clifford(2),[r*C+c,((r+1)%R)*C+c]])
+                    gs.append([random_clifford(2),[r*C+c,((r+1)%R)*C+c]])
                     gs_raw.append([gs[-1][0].to_matrix(),[r*C+c,((r+1)%R)*C+c]])
             d-=1
     return gs,gs_raw
@@ -59,13 +64,13 @@ def U_to_U_dagger_P_U(U,R,C,is_raw):
         V.append([gate if is_raw else gate.to_instruction(),idx])
     for r in range(R):
         for c in range(C):
-            V.append([qiskit.circuit.library.ZGate().to_matrix() if is_raw else qiskit.circuit.library.ZGate(),[r*C+c]])
+            V.append([ZGate().to_matrix() if is_raw else ZGate(),[r*C+c]])
     for gate,idx in reversed(U):
         V.append([gate.conj().T if is_raw else gate.adjoint().to_instruction(),idx])
     return V
 
 def circuit_from_gate_sequence(gate_sequence,R,C,is_raw):
-    qc=qiskit.QuantumCircuit(R*C)
+    qc=QuantumCircuit(R*C)
     for gate,idx in gate_sequence:
         if is_raw:
             qc.unitary(gate,idx)
@@ -77,8 +82,8 @@ def insert_Z_rotations(U,theta):
     ans=[]
     for gate,idx in U:
         ans.append([gate,idx])
-        ans.append([qiskit.circuit.library.RZGate(theta).to_matrix(),[idx[0]]])
-        ans.append([qiskit.circuit.library.RZGate(theta).to_matrix(),[idx[1]]])
+        ans.append([RZGate(theta).to_matrix(),[idx[0]]])
+        ans.append([RZGate(theta).to_matrix(),[idx[1]]])
     return ans
 
 def compute_H_terms(V,R,C,bounds):
@@ -107,7 +112,7 @@ def compute_H_terms(V,R,C,bounds):
                 if min_R<=i//C<max_R and min_C<=i%C<max_C:
                     tensors.append(qtn.Tensor(gate.reshape((2,2)),inds=['.'.join([str(i),str(label[i]+1)]),'.'.join([str(i),str(label[i])])]))
                     label[i]+=1
-        tensors.append(qtn.Tensor(p00,inds=['.'.join([str(k),str(label[k]+1)]),'.'.join([str(k),str(label[k])])]))
+        tensors.append(qtn.Tensor(p00,inds=['.'.join([str(k),str(label[k]+1)]),'.'.join([str(k),str(label[k])])]))  # type: ignore
         label[k]+=1
         for gate,idx in V:
             if len(idx)==2:
@@ -201,7 +206,7 @@ def compute_zV0(n,V,z):
     qc=qtn.circuit.Circuit(n)
     for g in V:
         qc.apply_gate_raw(g[0],g[1])
-    return abs(qc.amplitude(z))
+    return abs(qc.amplitude(z))  # type: ignore
 
 def reverse_permute(perm):
     perm_sorted=sorted(perm)
@@ -214,10 +219,11 @@ def hamming_weight_simulation(U,R,C,max_idx,theta,W):
     nn=R*C
     ZU=insert_Z_rotations(U,theta)
     ZV=U_to_U_dagger_P_U(ZU,R,C,True)
+    p_psi = np.empty(0)
     if nn<=l1_diff_limit:
-        backend=qiskit.Aer.get_backend('statevector_simulator')
+        backend=StatevectorSimulator()
         qc=circuit_from_gate_sequence(ZV,R,C,True)
-        result=qiskit.execute(qc,backend).result()
+        result=backend.run(transpile(qc, backend)).result()
         psi=np.array(result.get_statevector(qc))
         p_psi=np.array([abs(x)**2 for x in psi])
     for g in ZV:
@@ -275,7 +281,7 @@ def experiment_n_W(RC_list,d,theta,W_list):
         U,U_raw=generate_RQC_gate_sequence(R,C,d)
         V=U_to_U_dagger_P_U(U,R,C,False)
         qc=circuit_from_gate_sequence(V,R,C,False)
-        max_arr=qiskit.quantum_info.Clifford(qc).phase[R*C:]
+        max_arr=Clifford(qc).phase[R*C:]
         max_idx=list_to_int(max_arr)
         for i in range(len(W_list)):
             largest_eig,estimated_peakedness,normalized,peakedness=hamming_weight_simulation(U_raw,R,C,max_idx,theta,W_list[i])
@@ -288,7 +294,7 @@ def experiment_n_W(RC_list,d,theta,W_list):
     n_list=[R*C for R,C in RC_list]
     np.save("%d_%.2f_%s.npy"%(d,theta,W_list),{"n_list":n_list,"peakedness_list":peakedness_list,
              "estimated_peakedness_list":estimated_peakedness_list,"largest_eig_list":largest_eig_list,
-             "normalized_list":normalized_list})
+             "normalized_list":normalized_list})  # type: ignore
 
 def plot_together(d,theta,W_list,square):
     data=np.load("%d_%.2f_%s.npy"%(d,theta,W_list),allow_pickle=True)[()]
