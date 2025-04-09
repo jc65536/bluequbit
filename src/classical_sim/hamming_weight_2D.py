@@ -1,4 +1,5 @@
-from typing import cast
+from typing import SupportsAbs, cast
+from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
@@ -59,120 +60,178 @@ def hamming_ball(n: int, r: int, x: int) -> NDArray[np.int64]:
             ans.append(y)
     return np.array(ans,dtype=np.int64)
 
-def generate_RQC_gate_sequence(R: int, C: int, d: int) -> tuple[list[tuple[Clifford, tuple[int, int]]], list[tuple[NDArray[np.complex128], tuple[int, int]]]]:
-    gs: list[tuple[Clifford, tuple[int, int]]] =[]
-    gs_raw: list[tuple[NDArray[np.complex128], tuple[int, int]]] =[]
+type Unitary = NDArray[np.complex128]
+
+@dataclass
+class IGate[T]:
+    """
+    Indexed gate (generic over types of gate)
+    """
+    gate: T
+    idx: list[int]
+
+type GateList[T] = list[IGate[T]]
+
+type Pair[T] = tuple[T, T]
+
+def generate_RQC_gate_sequence(R: int, C: int, d: int) -> tuple[GateList[Clifford], GateList[Unitary]]:
+    gs: GateList[Clifford] =[]
+    gs_raw: GateList[Unitary] =[]
     while d>0:
         for offset in range(0,min(d,2,C-1)):
             for r in range(R):
                 for c in range(offset,C-1,2):
                     cliff = random_clifford(2)
-                    gs.append((cliff, (r*C+c,r*C+(c+1)%C)))
-                    gs_raw.append((cast(NDArray[np.complex128], cliff.to_matrix()), (r*C+c,r*C+(c+1)%C)))
+                    gs.append(IGate(cliff, [r*C+c,r*C+(c+1)%C]))
+                    gs_raw.append(IGate(cast(Unitary, cliff.to_matrix()), [r*C+c,r*C+(c+1)%C]))
             d-=1
         for offset in range(0,min(d,2,R-1)):
             for c in range(C):
                 for r in range(offset,R-1,2):
                     cliff = random_clifford(2)
-                    gs.append((cliff,(r*C+c,((r+1)%R)*C+c)))
-                    gs_raw.append((cast(NDArray[np.complex128], cliff.to_matrix()), (r*C+c,((r+1)%R)*C+c)))
+                    gs.append(IGate(cliff,[r*C+c,((r+1)%R)*C+c]))
+                    gs_raw.append(IGate(cast(Unitary, cliff.to_matrix()), [r*C+c,((r+1)%R)*C+c]))
             d-=1
     return gs,gs_raw
 
-def U_to_U_dagger_P_U(U: list[tuple[Clifford | NDArray[np.complex128], tuple[int, int]]], R: int, C: int, is_raw: bool):
-    V: list[tuple[Gate | NDArray[np.complex128], tuple[int, int]]]=[]
-    for gate,idx in U:
-        V.append([gate if is_raw else gate.to_instruction(),idx])
+def U_to_U_dagger_P_U(U: GateList[Clifford], R: int, C: int) -> GateList[Gate]:
+    V: GateList[Gate]=[]
+    for g in U:
+        V.append(IGate(g.gate.to_instruction(), g.idx))
     for r in range(R):
         for c in range(C):
-            V.append([ZGate().to_matrix() if is_raw else ZGate(),[r*C+c]])
-    for gate,idx in reversed(U):
-        V.append([gate.conj().T if is_raw else gate.adjoint().to_instruction(),idx])
+            V.append(IGate(ZGate(), [r*C+c]))
+    for g in reversed(U):
+        V.append(IGate(g.gate.adjoint().to_instruction(), g.idx))
     return V
 
-def circuit_from_gate_sequence(gate_sequence,R,C,is_raw):
+def U_to_U_dagger_P_U_raw(U: GateList[Unitary], R: int, C: int) -> GateList[Unitary]:
+    V: GateList[Unitary]=[]
+    for g in U:
+        V.append(g)
+    for r in range(R):
+        for c in range(C):
+            V.append(IGate(ZGate().to_matrix(),[r*C+c]))
+    for g in reversed(U):
+        V.append(IGate(g.gate.conj().T,g.idx))
+    return V
+
+def circuit_from_gate_sequence(gate_sequence: GateList[Gate],R: int,C: int) -> QuantumCircuit:
     qc=QuantumCircuit(R*C)
-    for gate,idx in gate_sequence:
-        if is_raw:
-            qc.unitary(gate,idx)
-        else:
-            qc.append(gate,idx)
+    for g in gate_sequence:
+        qc.append(g.gate,g.idx)
     return qc
 
-def insert_Z_rotations(U,theta):
-    ans=[]
-    for gate,idx in U:
-        ans.append([gate,idx])
-        ans.append([RZGate(theta).to_matrix(),[idx[0]]])
-        ans.append([RZGate(theta).to_matrix(),[idx[1]]])
+def circuit_from_gate_sequence_raw(gate_sequence: GateList[Unitary],R: int,C: int) -> QuantumCircuit:
+    qc=QuantumCircuit(R*C)
+    for g in gate_sequence:
+        qc.unitary(g.gate,g.idx)
+    return qc
+
+def insert_Z_rotations(U: GateList[Unitary], theta: float) -> GateList[Unitary]:
+    ans: GateList[Unitary]=[]
+    for g in U:
+        ans.append(g)
+        ans.append(IGate(RZGate(theta).to_matrix(), [g.idx[0]]))
+        ans.append(IGate(RZGate(theta).to_matrix(), [g.idx[1]]))
     return ans
 
-def compute_H_terms(V,R,C,bounds):
+def compute_H_terms(V: GateList[Unitary],R: int,C: int,bounds: list[Pair[Pair[int]]]) -> tuple[list[list[int]], list[Unitary]]:
     nn=R*C
-    terms=[]
-    mapping=[]
+    terms: list[Unitary]=[]
+    mapping: list[list[int]]=[]
     p00=np.array([[1,0],[0,0]])
     for k in range(nn):
-        min_R=bounds[k][0][0]
-        max_R=bounds[k][0][1]+1
-        min_C=bounds[k][1][0]
-        max_C=bounds[k][1][1]+1
-        tensors=[]
+        (min_R, max_R), (min_C, max_C)=bounds[k]
+        max_R += 1
+        max_C += 1
+        tensors: list[qtn.Tensor]=[]
         label=[0 for i in range(nn)]
-        for gate,idx in V:
-            if len(idx)==2:
-                i,j=idx
+        for g in V:
+            if len(g.idx)==2:
+                i,j=g.idx
                 if min_R<=i//C<max_R and min_C<=i%C<max_C and min_R<=j//C<max_R and min_C<=j%C<=max_C:
-                    tensors.append(qtn.Tensor(gate.reshape((2,2,2,2)),
-                                              inds=[".".join([str(i),str(label[i]+1)]),'.'.join([str(j),str(label[j]+1)]),
-                                                    '.'.join([str(i),str(label[i])]),'.'.join([str(j),str(label[j])])]))
+                    tensors.append(qtn.Tensor(
+                        g.gate.reshape((2,2,2,2)),  # type: ignore
+                        inds=[
+                            ".".join([str(i),str(label[i]+1)]),
+                            '.'.join([str(j),str(label[j]+1)]),
+                            '.'.join([str(i),str(label[i])]),
+                            '.'.join([str(j),str(label[j])]),
+                        ]
+                    ))
                     label[i]+=1
                     label[j]+=1
             else:
-                i=idx[0]
+                i=g.idx[0]
                 if min_R<=i//C<max_R and min_C<=i%C<max_C:
-                    tensors.append(qtn.Tensor(gate.reshape((2,2)),inds=['.'.join([str(i),str(label[i]+1)]),'.'.join([str(i),str(label[i])])]))
+                    tensors.append(qtn.Tensor(
+                        g.gate.reshape((2,2)),  # type: ignore
+                        inds=[
+                            '.'.join([str(i),str(label[i]+1)]),
+                            '.'.join([str(i),str(label[i])]),
+                        ]
+                    ))
                     label[i]+=1
-        tensors.append(qtn.Tensor(p00,inds=['.'.join([str(k),str(label[k]+1)]),'.'.join([str(k),str(label[k])])]))  # type: ignore
+        tensors.append(qtn.Tensor(
+            p00,  # type: ignore
+            inds=[
+                '.'.join([str(k),str(label[k]+1)]),
+                '.'.join([str(k),str(label[k])]),
+            ]
+        ))
         label[k]+=1
-        for gate,idx in V:
-            if len(idx)==2:
-                i,j=idx
+        for g in V:
+            if len(g.idx)==2:
+                i,j=g.idx
                 if min_R<=i//C<max_R and min_C<=i%C<max_C and min_R<=j//C<max_R and min_C<=j%C<=max_C:
-                    tensors.append(qtn.Tensor(gate.reshape((2,2,2,2)),
-                                              inds=[".".join([str(i),str(label[i]+1)]),'.'.join([str(j),str(label[j]+1)]),
-                                                    '.'.join([str(i),str(label[i])]),'.'.join([str(j),str(label[j])])]))
+                    tensors.append(qtn.Tensor(
+                        g.gate.reshape((2,2,2,2)),  # type: ignore
+                        inds=[
+                            ".".join([str(i),str(label[i]+1)]),
+                            '.'.join([str(j),str(label[j]+1)]),
+                            '.'.join([str(i),str(label[i])]),
+                            '.'.join([str(j),str(label[j])]),
+                        ]
+                    ))
                     label[i]+=1
                     label[j]+=1
             else:
-                i=idx[0]
+                i=g.idx[0]
                 if min_R<=i//C<max_R and min_C<=i%C<max_C:
-                    tensors.append(qtn.Tensor(gate.reshape((2,2)),inds=['.'.join([str(i),str(label[i]+1)]),'.'.join([str(i),str(label[i])])]))
+                    tensors.append(qtn.Tensor(
+                        g.gate.reshape((2,2)),  # type: ignore
+                        inds=[
+                            '.'.join([str(i),str(label[i]+1)]),
+                            '.'.join([str(i),str(label[i])]),
+                        ]
+                    ))
                     label[i]+=1
-        TN=tensors[0]
+        TN=tensors[0].as_network()
         for t in tensors[1:]:
             TN&=t
         TN=TN.contract()
-        mapping.append([int(x.split(".")[0]) for x in TN.inds])
-        terms.append(TN.data/nn)
+        assert isinstance(TN, qtn.Tensor)
+        mapping.append([int(cast(str, x).split(".")[0]) for x in TN.inds])
+        terms.append(cast(Unitary, TN.data)/nn)
     return mapping,terms
 
-def compute_lightcone(V,R,C):
-    ans=[]
+def compute_lightcone[T](V: GateList[T], R: int, C: int) -> list[Pair[Pair[int]]]:
+    ans: list[Pair[Pair[int]]]=[]
     for j in range(R*C):
         lightcone=set([j])
-        for gate,idx in V:
-            if len(idx)==2:
-                if idx[0] in lightcone or idx[1] in lightcone:
-                    lightcone.add(idx[0])
-                    lightcone.add(idx[1])
+        for g in V:
+            if len(g.idx)==2:
+                if g.idx[0] in lightcone or g.idx[1] in lightcone:
+                    lightcone.add(g.idx[0])
+                    lightcone.add(g.idx[1])
         lightcone=np.array(list(lightcone))
         rs=lightcone//C
         cs=lightcone%C
-        ans.append([[min(rs),max(rs)],[min(cs),max(cs)]])
+        ans.append(((min(rs),max(rs)),(min(cs),max(cs))))
     return ans
 
-def get_mask(R,C,min_R,max_R,min_C,max_C):
+def get_mask(R: int,C: int,min_R: int,max_R: int,min_C: int,max_C: int) -> int:
     mask=0
     for i in range(R*C-1,-1,-1):
         mask<<=1
@@ -181,7 +240,23 @@ def get_mask(R,C,min_R,max_R,min_C,max_C):
     return mask
 
 @njit
-def compute_G_j(row,col,data,idx,term,dim,hb,hb_reverse,R,C,min_R,max_R,min_C,max_C,mask):
+def compute_G_j(
+    row: NDArray[np.int64],
+    col: NDArray[np.int64],
+    data: Unitary,
+    idx: int,
+    term,
+    dim,
+    hb: NDArray[np.int64],
+    hb_reverse: Dict,
+    R: int,
+    C: int,
+    min_R: int,
+    max_R: int,
+    min_C: int,
+    max_C: int,
+    mask: int,
+):
     N=(max_R-min_R)*(max_C-min_C)
     bucket=List()
     uncollapse=np.zeros(2**N,dtype=np.int64)
@@ -227,7 +302,7 @@ def compute_zV0(n,V,z):
     qc=qtn.circuit.Circuit(n)
     for g in V:
         qc.apply_gate_raw(g[0],g[1])
-    return abs(qc.amplitude(z))  # type: ignore
+    return abs(cast(SupportsAbs, qc.amplitude(z)))
 
 def reverse_permute(perm):
     perm_sorted=sorted(perm)
@@ -239,16 +314,16 @@ def hamming_weight_simulation(U,R,C,max_idx,theta,W):
     l1_diff_limit=2
     nn=R*C
     ZU=insert_Z_rotations(U,theta)
-    ZV=U_to_U_dagger_P_U(ZU,R,C,True)
+    ZV=U_to_U_dagger_P_U_raw(ZU,R,C)
     p_psi = np.empty(0)
     if nn<=l1_diff_limit:
         backend=StatevectorSimulator()
-        qc=circuit_from_gate_sequence(ZV,R,C,True)
+        qc=circuit_from_gate_sequence_raw(ZV,R,C)
         result=backend.run(transpile(qc, backend)).result()
         psi=np.array(result.get_statevector(qc))
         p_psi=np.array([abs(x)**2 for x in psi])
     for g in ZV:
-        g[1]=list(reversed(g[1]))
+        g.idx=list(reversed(g.idx))
     zV0=compute_zV0(nn,ZV,int_to_str(max_idx, b=2, m=nn))
     print(zV0,flush=True)
     max_non_zero=4*10**8
@@ -300,8 +375,8 @@ def experiment_n_W(RC_list,d,theta,W_list):
     peakedness_list=[]
     for R,C in RC_list:
         U,U_raw=generate_RQC_gate_sequence(R,C,d)
-        V=U_to_U_dagger_P_U(U,R,C,False)
-        qc=circuit_from_gate_sequence(V,R,C,False)
+        V=U_to_U_dagger_P_U(U,R,C)
+        qc=circuit_from_gate_sequence(V,R,C)
         max_arr=Clifford(qc).phase[R*C:]
         max_idx=list_to_int(max_arr)
         for i in range(len(W_list)):
