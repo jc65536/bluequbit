@@ -1,4 +1,5 @@
-from typing import SupportsAbs, cast
+from typing import cast
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from matplotlib.axes import Axes
@@ -263,7 +264,7 @@ def compute_G_j(
     mask: int,
 ) -> int:
     N=(max_R-min_R)*(max_C-min_C)
-    bucket: List[set[int]]=cast(List[set[int]], List())
+    bucket: Sequence[set[int]]=List()
     uncollapse=np.zeros(2**N,dtype=np.int64)
     for _ in range(2**N):
         bucket.append(set([-1]))
@@ -490,7 +491,7 @@ def plot_separate(d: int,theta: float,W_list: list[int],square: bool):
     plt.show()
     
 def go():
-    RC_list=[(5,6),(6,6),(7,6),(6,8),(7,8)]
+    RC_list=[(2,2)]
     d=3
     W_list=[3,4,5]
     W_list=[4,5,6]
