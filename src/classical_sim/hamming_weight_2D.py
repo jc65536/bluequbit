@@ -1,12 +1,14 @@
 from typing import SupportsAbs, cast
 from dataclasses import dataclass
 
+from matplotlib.axes import Axes
 import numpy as np
 from numpy.typing import NDArray
 
 import scipy
 
 from qiskit import QuantumCircuit, transpile
+from qiskit.result import Result
 from qiskit.quantum_info import random_clifford, Clifford
 from qiskit.circuit import Gate
 from qiskit.circuit.library import ZGate, RZGate
@@ -14,10 +16,13 @@ from qiskit_aer import StatevectorSimulator
 
 import quimb.tensor as qtn
 from itertools import combinations
-from numba import njit, int64
+import numba
+from numba import njit
 from numba.typed.typedlist import List
 from numba.typed import Dict
 import matplotlib.pyplot as plt
+from scipy.sparse import csr_array
+import scipy.sparse.linalg
 
 def list_to_int(x: NDArray):
     return sum([x[i]*2**i for i in range(len(x))])
@@ -245,10 +250,10 @@ def compute_G_j(
     col: NDArray[np.int64],
     data: Unitary,
     idx: int,
-    term,
-    dim,
+    term: Unitary,
+    dim: int,
     hb: NDArray[np.int64],
-    hb_reverse: Dict,
+    hb_reverse: dict[np.int64, np.int64],  # actually a numba Dict
     R: int,
     C: int,
     min_R: int,
@@ -256,14 +261,14 @@ def compute_G_j(
     min_C: int,
     max_C: int,
     mask: int,
-):
+) -> int:
     N=(max_R-min_R)*(max_C-min_C)
-    bucket=List()
+    bucket: List[set[int]]=cast(List[set[int]], List())
     uncollapse=np.zeros(2**N,dtype=np.int64)
-    for i in range(2**N):
+    for _ in range(2**N):
         bucket.append(set([-1]))
     for i in range(dim):
-        mid=hb[i]&mask
+        mid: int=hb[i]&mask
         collapsed_mid=0
         x=mid
         pos=0
@@ -281,8 +286,8 @@ def compute_G_j(
             if abs(term[y,x])>1e-15:
                 for other in bucket[y]:
                     if other in bucket[x]:
-                        bra=other+uncollapse[y]
-                        ket=other+uncollapse[x]
+                        bra: np.int64=other+uncollapse[y]
+                        ket: np.int64=other+uncollapse[x]
                         i=hb_reverse[bra]
                         k=hb_reverse[ket]
                         if i>=k:
@@ -298,19 +303,26 @@ def compute_G_j(
                         idx+=1
     return idx
 
-def compute_zV0(n,V,z):
+def compute_zV0(n: int, V: GateList[Unitary], z: str) -> np.float64:
     qc=qtn.circuit.Circuit(n)
     for g in V:
-        qc.apply_gate_raw(g[0],g[1])
-    return abs(cast(SupportsAbs, qc.amplitude(z)))
+        qc.apply_gate_raw(g.gate,g.idx)
+    return abs(cast(np.complex128, qc.amplitude(z)))
 
-def reverse_permute(perm):
+def reverse_permute(perm: list[int]) -> NDArray[np.int64]:
     perm_sorted=sorted(perm)
     reduced_perm=[perm_sorted.index(x) for x in perm]
     nn=len(perm)-1
-    return np.array([nn-x for x in reduced_perm])
+    return np.array([nn-x for x in reduced_perm], dtype=np.int64)
 
-def hamming_weight_simulation(U,R,C,max_idx,theta,W):
+def hamming_weight_simulation(
+    U: GateList[Unitary],
+    R: int,
+    C: int,
+    max_idx: int,
+    theta: float,
+    W: int,
+) -> tuple[np.float64, np.float64, np.float64, np.float64]:
     l1_diff_limit=2
     nn=R*C
     ZU=insert_Z_rotations(U,theta)
@@ -319,9 +331,9 @@ def hamming_weight_simulation(U,R,C,max_idx,theta,W):
     if nn<=l1_diff_limit:
         backend=StatevectorSimulator()
         qc=circuit_from_gate_sequence_raw(ZV,R,C)
-        result=backend.run(transpile(qc, backend)).result()
-        psi=np.array(result.get_statevector(qc))
-        p_psi=np.array([abs(x)**2 for x in psi])
+        result: Result=cast(Result, backend.run(transpile(qc, backend)).result())
+        psi=np.array(result.get_statevector())
+        p_psi=np.array([abs(x)**2 for x in psi], dtype=np.float64)
     for g in ZV:
         g.idx=list(reversed(g.idx))
     zV0=compute_zV0(nn,ZV,int_to_str(max_idx, b=2, m=nn))
@@ -331,11 +343,11 @@ def hamming_weight_simulation(U,R,C,max_idx,theta,W):
     mapping,terms=compute_H_terms(ZV,R,C,bounds)
     hb=hamming_ball(nn,W,max_idx)
     dim=len(hb)
-    print(dim,flush=True)
+    print(f"hamming ball len: {dim}",flush=True)
     
-    hb_reverse=Dict.empty(key_type=int64,value_type=int64)
+    hb_reverse: dict[np.int64, np.int64] = Dict.empty(key_type=numba.int64,value_type=numba.int64)
     for i in range(len(hb)):
-        hb_reverse[hb[i]]=i
+        hb_reverse[hb[i]]=np.int64(i)
     
     row=np.zeros(max_non_zero,dtype=np.int64)
     col=np.zeros(max_non_zero,dtype=np.int64)
@@ -352,32 +364,33 @@ def hamming_weight_simulation(U,R,C,max_idx,theta,W):
         mask=get_mask(R,C,min_R,max_R,min_C,max_C)
         idx=compute_G_j(row,col,data,idx,term,dim,hb,hb_reverse,R,C,min_R,max_R,min_C,max_C,mask)
     
-    G=scipy.sparse.csr_array((data,(row,col)),shape=(dim,dim),dtype=complex)
-    G=G+G.conj().T
+    G=csr_array((data,(row,col)),shape=(dim,dim),dtype=complex)
+    G: csr_array=cast(csr_array, G+G.conj().T)
     
-    su,sv=scipy.sparse.linalg.eigs(G,k=1)
-    print(G.nnz,flush=True)
-    print(su[0].real,flush=True)
+    su,sv=cast(tuple[NDArray[np.complex128], NDArray[np.complex128]], scipy.sparse.linalg.eigs(G,k=1))
+    print(f"G.nnz: {G.nnz}",flush=True)
+    eigenvalue = cast(np.complex128, su[0])
+    print(f"Eigenvalue real part: {eigenvalue.real}",flush=True)
     sphi=sv[:,-1]
     if nn<=l1_diff_limit:
-        sp_phi=np.array([abs(x)**2 for x in sphi])
+        sp_phi=np.array([abs(x)**2 for x in sphi], dtype=np.float64)
         l1_diff=np.linalg.norm(sp_phi-p_psi[hb],1)+np.linalg.norm(p_psi[list(set(range(2**nn)).difference(hb))],1)
-        print(l1_diff)
-        return su[0].real,l1_diff,np.sqrt(sp_phi[0]),zV0
+        print(f"l1_diff: {l1_diff}")
+        return eigenvalue.real,l1_diff,np.sqrt(sp_phi[0]),zV0
     
     hb1=hamming_ball(nn,W-1,max_idx)
-    return su[0].real,abs(sphi[0]),abs(sphi[0])*np.linalg.norm(sphi[:len(hb1)]),zV0
+    return eigenvalue.real,abs(sphi[0]),abs(sphi[0])*np.linalg.norm(sphi[:len(hb1)]),zV0
 
-def experiment_n_W(RC_list,d,theta,W_list):
-    largest_eig_list=[[] for i in range(len(W_list))]
-    estimated_peakedness_list=[[] for i in range(len(W_list))]
-    normalized_list=[[] for i in range(len(W_list))]
-    peakedness_list=[]
+def experiment_n_W(RC_list: list[tuple[int, int]],d: int,theta: float,W_list: list[int]):
+    largest_eig_list: list[list[np.float64]]=[[] for _ in range(len(W_list))]
+    estimated_peakedness_list: list[list[np.float64]]=[[] for _ in range(len(W_list))]
+    normalized_list: list[list[np.float64]]=[[] for _ in range(len(W_list))]
+    peakedness_list: list[np.float64]=[]
     for R,C in RC_list:
         U,U_raw=generate_RQC_gate_sequence(R,C,d)
         V=U_to_U_dagger_P_U(U,R,C)
         qc=circuit_from_gate_sequence(V,R,C)
-        max_arr=Clifford(qc).phase[R*C:]
+        max_arr: NDArray=Clifford(qc).phase[R*C:]
         max_idx=list_to_int(max_arr)
         for i in range(len(W_list)):
             largest_eig,estimated_peakedness,normalized,peakedness=hamming_weight_simulation(U_raw,R,C,max_idx,theta,W_list[i])
@@ -392,16 +405,17 @@ def experiment_n_W(RC_list,d,theta,W_list):
              "estimated_peakedness_list":estimated_peakedness_list,"largest_eig_list":largest_eig_list,
              "normalized_list":normalized_list})  # type: ignore
 
-def plot_together(d,theta,W_list,square):
-    data=np.load("%d_%.2f_%s.npy"%(d,theta,W_list),allow_pickle=True)[()]
-    n_list=data["n_list"]
-    peakedness_list=data["peakedness_list"]
-    estimated_peakedness_list=data["estimated_peakedness_list"]
-    largest_eig_list=data["largest_eig_list"]
+def plot_together(d: int,theta: float,W_list: list[int],square: bool):
+    data: dict=np.load("%d_%.2f_%s.npy"%(d,theta,W_list),allow_pickle=True)[()]
+    n_list: list[int]=data["n_list"]
+    peakedness_list: list[np.float64]=data["peakedness_list"]
+    estimated_peakedness_list: list[list[np.float64]]=data["estimated_peakedness_list"]
+    largest_eig_list: list[list[np.float64]]=data["largest_eig_list"]
     # normalized_list=data["normalized_list"]
     
     colour_cycle=plt.rcParams['axes.prop_cycle'].by_key()['color']
     fig,axs=plt.subplots(2,figsize=(8,10))
+    axs: list[Axes]
     axs[0].set_title(r"2D Random Clifford Circuit with $R(\theta)$ Rotations, $d$=%d, $\theta$=%.2f"%(d,theta),fontsize=14)
     axs[0].set_xticks(n_list)
     if square:
@@ -431,12 +445,12 @@ def plot_together(d,theta,W_list,square):
         plt.savefig("together_n_list_w_list_%d_%.2f.png"%(d,theta),bbox_inches='tight',dpi=300)
     plt.show()
 
-def plot_separate(d,theta,W_list,square):
+def plot_separate(d: int,theta: float,W_list: list[int],square: bool):
     data=np.load("%d_%.2f_%s.npy"%(d,theta,W_list),allow_pickle=True)[()]
-    n_list=data["n_list"]
-    peakedness_list=data["peakedness_list"]
-    estimated_peakedness_list=data["estimated_peakedness_list"]
-    largest_eig_list=data["largest_eig_list"]
+    n_list: list[int]=data["n_list"]
+    peakedness_list: list[np.float64]=data["peakedness_list"]
+    estimated_peakedness_list: list[list[np.float64]]=data["estimated_peakedness_list"]
+    largest_eig_list: list[list[np.float64]]=data["largest_eig_list"]
     # normalized_list=data["normalized_list"]
     
     colour_cycle=plt.rcParams['axes.prop_cycle'].by_key()['color']
@@ -476,7 +490,7 @@ def plot_separate(d,theta,W_list,square):
     plt.show()
     
 def go():
-    RC_list=[[5,6],[6,6],[7,6],[6,8],[7,8]]
+    RC_list=[(5,6),(6,6),(7,6),(6,8),(7,8)]
     d=3
     W_list=[3,4,5]
     W_list=[4,5,6]
