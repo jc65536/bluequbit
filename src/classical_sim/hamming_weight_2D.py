@@ -25,6 +25,31 @@ import matplotlib.pyplot as plt
 from scipy.sparse import csr_array
 import scipy.sparse.linalg
 
+type Unitary = NDArray[np.complex128]
+
+
+@dataclass
+class IGate[T]:
+    """
+    Indexed gate (generic over types of gate)
+    """
+    gate: T
+    idx: list[int]
+
+
+type GateList[T] = list[IGate[T]]
+
+
+@dataclass
+class Bounds:
+    """
+    2D bounds for lightcone. Begin is inclusive and end is exclusive.
+    """
+    R_begin: int
+    R_end: int
+    C_begin: int
+    C_end: int
+
 
 def list_to_int(x: NDArray):
     return sum([x[i]*2**i for i in range(len(x))])
@@ -50,11 +75,12 @@ def hamming_ball(n: int, r: int, x: int) -> NDArray[np.int64]:
     """
     Parameters
     ----------
-    n: number of bits in x
-
-    r: max hamming distance
-
-    x: bitstring
+    n: int
+        Number of bits in x
+    r: int
+        Max hamming distance
+    x: int
+        Bitstring
 
     Returns
     -------
@@ -70,47 +96,69 @@ def hamming_ball(n: int, r: int, x: int) -> NDArray[np.int64]:
     return np.array(ans, dtype=np.int64)
 
 
-type Unitary = NDArray[np.complex128]
-
-
-@dataclass
-class IGate[T]:
-    """
-    Indexed gate (generic over types of gate)
-    """
-    gate: T
-    idx: list[int]
-
-
-type GateList[T] = list[IGate[T]]
-
-type Pair[T] = tuple[T, T]
-
-
 def generate_RQC_gate_sequence(R: int, C: int, d: int) -> tuple[GateList[Clifford], GateList[Unitary]]:
+    """
+    Parameters
+    ----------
+    R: int
+        Number of rows in qubit grid
+    C: int
+        Number of columns in qubit grid
+    d: int
+        Circuit depth
+
+    Returns
+    -------
+    gs, gs_raw: tuple[GateList[Clifford], GateList[Unitary]]
+        gs and gs_raw represent the same R * C qubit circuit consisting of
+        Clifford gates "arranged in a 2D open boundary condition brickwork
+        circuit architecture" (section 3.2 p. 16).
+    """
     gs: GateList[Clifford] = []
     gs_raw: GateList[Unitary] = []
     while d > 0:
+        # Insert gates between horizontally adjacent qubits
         for offset in range(0, min(d, 2, C-1)):
             for r in range(R):
                 for c in range(offset, C-1, 2):
                     cliff = random_clifford(2)
                     gs.append(IGate(cliff, [r*C+c, r*C+(c+1) % C]))
-                    gs_raw.append(
-                        IGate(cast(Unitary, cliff.to_matrix()), [r*C+c, r*C+(c+1) % C]))
+                    gs_raw.append(IGate(
+                        gate=cast(Unitary, cliff.to_matrix()),
+                        idx=[r*C+c, r*C+(c+1) % C],
+                    ))
             d -= 1
+        # Insert gates between vertically adjacent qubits
         for offset in range(0, min(d, 2, R-1)):
             for c in range(C):
                 for r in range(offset, R-1, 2):
                     cliff = random_clifford(2)
                     gs.append(IGate(cliff, [r*C+c, ((r+1) % R)*C+c]))
-                    gs_raw.append(
-                        IGate(cast(Unitary, cliff.to_matrix()), [r*C+c, ((r+1) % R)*C+c]))
+                    gs_raw.append(IGate(
+                        gate=cast(Unitary, cliff.to_matrix()),
+                        idx=[r*C+c, ((r+1) % R)*C+c],
+                    ))
             d -= 1
     return gs, gs_raw
 
 
 def U_to_U_dagger_P_U(U: GateList[Clifford], R: int, C: int) -> GateList[Gate]:
+    """
+    Parameters
+    ----------
+    U: GateList[Clifford]
+        A random brickwork circuit consisting of Clifford gates
+    R: int
+        Number of rows in qubit grid
+    C: int
+        Number of columns in qubit grid
+
+    Returns
+    -------
+    V: GateList[Gate]
+        Where `V(θ) = U†(θ) Z^{⊗n} U(θ)` (section 3.2 p. 16). Note that the
+        parameter θ is actually given in `insert_Z_rotations`.
+    """
     V: GateList[Gate] = []
     for g in U:
         V.append(IGate(g.gate.to_instruction(), g.idx))
@@ -123,6 +171,9 @@ def U_to_U_dagger_P_U(U: GateList[Clifford], R: int, C: int) -> GateList[Gate]:
 
 
 def U_to_U_dagger_P_U_raw(U: GateList[Unitary], R: int, C: int) -> GateList[Unitary]:
+    """
+    Same as `U_to_U_dagger_P_U` but for unitary gates.
+    """
     V: GateList[Unitary] = []
     for g in U:
         V.append(g)
@@ -157,21 +208,43 @@ def insert_Z_rotations(U: GateList[Unitary], theta: float) -> GateList[Unitary]:
     return ans
 
 
-def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Pair[Pair[int]]]) -> tuple[list[list[int]], list[Unitary]]:
+def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Bounds]) -> tuple[list[list[int]], list[Unitary]]:
+    """
+    I think this function is for the "local parent Hamiltonian" (section 3.1 p. 13).
+
+    Returns
+    -------
+    mapping, terms: tuple[list[list[int]], list[Unitary]]
+        TODO
+    """
     nn = R*C
     terms: list[Unitary] = []
     mapping: list[list[int]] = []
+
+    # Projector |0><0|
     p00 = np.array([[1, 0], [0, 0]])
+
+    # We compute something with respect to the lightcone of each qubit k. I
+    # believe this may be related to "expected values can be efficiently
+    # computed by restricting the circuit to the lightcone of a single qubit"
+    # (p. 11)
     for k in range(nn):
-        (min_R, max_R), (min_C, max_C) = bounds[k]
-        max_R += 1
-        max_C += 1
+        b = bounds[k]
         tensors: list[qtn.Tensor] = []
-        label = [0 for i in range(nn)]
+
+        # label[i] keeps track of the depth of qubit i as we step through the
+        # circuit
+        label = [0 for _ in range(nn)]
+
         for g in V:
             if len(g.idx) == 2:
                 i, j = g.idx
-                if min_R <= i//C < max_R and min_C <= i % C < max_C and min_R <= j//C < max_R and min_C <= j % C <= max_C:
+                if (
+                    b.R_begin <= i//C < b.R_end
+                    and b.C_begin <= i % C < b.C_end
+                    and b.R_begin <= j//C < b.R_end
+                    and b.C_begin <= j % C <= b.C_end
+                ):
                     tensors.append(qtn.Tensor(
                         g.gate.reshape((2, 2, 2, 2)),  # type: ignore
                         inds=[
@@ -185,7 +258,7 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Pair[Pair
                     label[j] += 1
             else:
                 i = g.idx[0]
-                if min_R <= i//C < max_R and min_C <= i % C < max_C:
+                if b.R_begin <= i//C < b.R_end and b.C_begin <= i % C < b.C_end:
                     tensors.append(qtn.Tensor(
                         g.gate.reshape((2, 2)),  # type: ignore
                         inds=[
@@ -205,7 +278,12 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Pair[Pair
         for g in V:
             if len(g.idx) == 2:
                 i, j = g.idx
-                if min_R <= i//C < max_R and min_C <= i % C < max_C and min_R <= j//C < max_R and min_C <= j % C <= max_C:
+                if (
+                    b.R_begin <= i//C < b.R_end
+                    and b.C_begin <= i % C < b.C_end
+                    and b.R_begin <= j//C < b.R_end
+                    and b.C_begin <= j % C <= b.C_end
+                ):
                     tensors.append(qtn.Tensor(
                         g.gate.reshape((2, 2, 2, 2)),  # type: ignore
                         inds=[
@@ -219,7 +297,7 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Pair[Pair
                     label[j] += 1
             else:
                 i = g.idx[0]
-                if min_R <= i//C < max_R and min_C <= i % C < max_C:
+                if b.R_begin <= i//C < b.R_end and b.C_begin <= i % C < b.C_end:
                     tensors.append(qtn.Tensor(
                         g.gate.reshape((2, 2)),  # type: ignore
                         inds=[
@@ -231,15 +309,14 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Pair[Pair
         TN = tensors[0].as_network()
         for t in tensors[1:]:
             TN &= t
-        TN = TN.contract()
-        assert isinstance(TN, qtn.Tensor)
+        TN = cast(qtn.Tensor, TN.contract())
         mapping.append([int(cast(str, x).split(".")[0]) for x in TN.inds])
         terms.append(cast(Unitary, TN.data)/nn)
     return mapping, terms
 
 
-def compute_lightcone[T](V: GateList[T], R: int, C: int) -> list[Pair[Pair[int]]]:
-    ans: list[Pair[Pair[int]]] = []
+def compute_lightcone[T](V: GateList[T], R: int, C: int) -> list[Bounds]:
+    ans: list[Bounds] = []
     for j in range(R*C):
         lightcone = set([j])
         for g in V:
@@ -250,7 +327,7 @@ def compute_lightcone[T](V: GateList[T], R: int, C: int) -> list[Pair[Pair[int]]
         lightcone = np.array(list(lightcone))
         rs = lightcone//C
         cs = lightcone % C
-        ans.append(((min(rs), max(rs)), (min(cs), max(cs))))
+        ans.append(Bounds(min(rs), max(rs) + 1, min(cs), max(cs) + 1))
     return ans
 
 
@@ -324,6 +401,22 @@ def compute_G_j(
 
 
 def compute_zV0(n: int, V: GateList[Unitary], z: str) -> np.float64:
+    """
+    Parameters
+    ----------
+    n: int
+        Number of qubits in circuit V
+    V: GateList[Unitary]
+        Defined as `V(θ) = U†(θ) Z^{⊗n} U(θ)` (section 3.2 p. 16).
+    z: str
+        The peak bitstring
+
+    Returns
+    -------
+    zV0: np.float64
+        The amplitude `|<z| V(θ) |0^n>|`. Since θ is small, this amplitude is
+        close to 1.
+    """
     qc = qtn.circuit.Circuit(n)
     for g in V:
         qc.apply_gate_raw(g.gate, g.idx)
@@ -345,22 +438,50 @@ def hamming_weight_simulation(
     theta: float,
     W: int,
 ) -> tuple[np.float64, np.float64, np.float64, np.float64]:
+    """
+    Parameters
+    ----------
+    U: GateList[Unitary]
+        A random brickwork circuit consisting of Clifford gates
+    R: int
+        Number of rows in qubit grid
+    C: int
+        Number of columns in qubit grid
+    max_idx: int
+        The peak bitstring of `V(θ) = U†(θ) Z^{⊗n} U(θ)`.
+    theta: float
+        Parameter for the Z rotations in U(θ)
+    W: int
+        Hamming ball radius
+
+    Returns
+    -------
+    TODO
+    """
     l1_diff_limit = 2
     nn = R*C
     ZU = insert_Z_rotations(U, theta)
+
+    # ZV is our peaked circuit
     ZV = U_to_U_dagger_P_U_raw(ZU, R, C)
+
     p_psi = np.empty(0)
+
+    # Not sure what this does, but this is rare since l1_diff_limit = 2
     if nn <= l1_diff_limit:
         backend = StatevectorSimulator()
         qc = circuit_from_gate_sequence_raw(ZV, R, C)
-        result: Result = cast(Result, backend.run(
-            transpile(qc, backend)).result())
+        qc = transpile(qc, backend)
+        result: Result = cast(Result, backend.run(qc).result())
         psi = np.array(result.get_statevector())
         p_psi = np.array([abs(x)**2 for x in psi], dtype=np.float64)
+
     for g in ZV:
         g.idx = list(reversed(g.idx))
+
     zV0 = compute_zV0(nn, ZV, int_to_str(max_idx, b=2, m=nn))
-    print(zV0, flush=True)
+    print(f"zV0: {zV0}", flush=True)
+
     max_non_zero = 4*10**8
     bounds = compute_lightcone(ZV, R, C)
     mapping, terms = compute_H_terms(ZV, R, C, bounds)
@@ -369,7 +490,9 @@ def hamming_weight_simulation(
     print(f"hamming ball len: {dim}", flush=True)
 
     hb_reverse: dict[np.int64, np.int64] = Dict.empty(
-        key_type=numba.int64, value_type=numba.int64)
+        key_type=numba.int64,
+        value_type=numba.int64
+    )
     for i in range(len(hb)):
         hb_reverse[hb[i]] = np.int64(i)
 
@@ -378,18 +501,15 @@ def hamming_weight_simulation(
     data = np.zeros(max_non_zero, dtype=complex)
     idx = 0
     for j in range(nn):
-        min_R = bounds[j][0][0]
-        max_R = bounds[j][0][1]+1
-        min_C = bounds[j][1][0]
-        max_C = bounds[j][1][1]+1
-        N = (max_R-min_R)*(max_C-min_C)
+        b = bounds[j]
+        N = (b.R_end-b.R_begin)*(b.C_end-b.C_begin)
         term = np.moveaxis(terms[j], list(range(N)),
                            reverse_permute(mapping[j][:N]))
         term = np.moveaxis(term, list(
             range(N, 2*N)), reverse_permute(mapping[j][N:])+N).reshape(1 << N, 1 << N)
-        mask = get_mask(R, C, min_R, max_R, min_C, max_C)
-        idx = compute_G_j(row, col, data, idx, term, dim, hb,
-                          hb_reverse, R, C, min_R, max_R, min_C, max_C, mask)
+        mask = get_mask(R, C, b.R_begin, b.R_end, b.C_begin, b.C_end)
+        idx = compute_G_j(row, col, data, idx, term, dim, hb, hb_reverse,
+                          R, C, b.R_begin, b.R_end, b.C_begin, b.C_end, mask)
 
     G = csr_array((data, (row, col)), shape=(dim, dim), dtype=complex)
     G: csr_array = cast(csr_array, G+G.conj().T)
@@ -400,10 +520,13 @@ def hamming_weight_simulation(
     eigenvalue = cast(np.complex128, su[0])
     print(f"Eigenvalue real part: {eigenvalue.real}", flush=True)
     sphi = sv[:, -1]
+
     if nn <= l1_diff_limit:
         sp_phi = np.array([abs(x)**2 for x in sphi], dtype=np.float64)
-        l1_diff = np.linalg.norm(
-            sp_phi-p_psi[hb], 1)+np.linalg.norm(p_psi[list(set(range(2**nn)).difference(hb))], 1)
+        l1_diff = (
+            np.linalg.norm(sp_phi-p_psi[hb], 1)
+            + np.linalg.norm(p_psi[list(set(range(2**nn)).difference(hb))], 1)
+        )
         print(f"l1_diff: {l1_diff}")
         return eigenvalue.real, l1_diff, np.sqrt(sp_phi[0]), zV0
 
@@ -545,14 +668,17 @@ def plot_separate(d: int, theta: float, W_list: list[int], square: bool):
 
 
 def go():
-    RC_list = [(2, 2)]
-    d = 3
-    W_list = [3, 4, 5]
-    W_list = [4, 5, 6]
-    theta = 0.2
-    experiment_n_W(RC_list, d, theta, W_list)
-    plot_together(d, theta, W_list, True)
-    plot_separate(d, theta, W_list, True)
+    try:
+        RC_list = [(4, 4)]
+        d = 3
+        # W_list = [3, 4, 5]
+        W_list = [2, 3, 4]
+        theta = 0.2
+        experiment_n_W(RC_list, d, theta, W_list)
+        plot_together(d, theta, W_list, True)
+        plot_separate(d, theta, W_list, True)
+    except KeyboardInterrupt:
+        exit(1)
 
 
 go()
