@@ -1,5 +1,5 @@
 from typing import cast
-from collections.abc import Sequence
+from collections.abc import MutableSequence
 from dataclasses import dataclass
 
 from matplotlib.axes import Axes
@@ -215,7 +215,8 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Bounds]) 
     Returns
     -------
     mapping, terms: tuple[list[list[int]], list[Unitary]]
-        TODO
+        I think terms[i] is a "term" or "component" of the full Hamiltonian H
+        which acts on the qubits in mapping[i].
     """
     nn = R*C
     terms: list[Unitary] = []
@@ -275,6 +276,10 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Bounds]) 
             ]
         ))
         label[k] += 1
+
+        # I believe this is implementing V†, but this only works because V (as
+        # defined in section 3.2 p. 16) is its own inverse. To make this work
+        # for general V I think we need to use g.gate.conj().T
         for g in V:
             if len(g.idx) == 2:
                 i, j = g.idx
@@ -312,6 +317,7 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Bounds]) 
         TN = cast(qtn.Tensor, TN.contract())
         mapping.append([int(cast(str, x).split(".")[0]) for x in TN.inds])
         terms.append(cast(Unitary, TN.data)/nn)
+
     return mapping, terms
 
 
@@ -359,7 +365,7 @@ def compute_G_j(
     mask: int,
 ) -> int:
     N = (max_R-min_R)*(max_C-min_C)
-    bucket: Sequence[set[int]] = List()
+    bucket: MutableSequence[set[int]] = List()  # type: ignore
     uncollapse = np.zeros(2**N, dtype=np.int64)
     for _ in range(2**N):
         bucket.append(set([-1]))
@@ -424,7 +430,21 @@ def compute_zV0(n: int, V: GateList[Unitary], z: str) -> np.float64:
 
 
 def reverse_permute(perm: list[int]) -> NDArray[np.int64]:
+    """
+    Parameters
+    ----------
+    perm: list[int]
+        A list of integers to permute
+
+    Returns
+    -------
+    permutation: NDArray[np.int64]
+        The permutation that would sort perm in descending order. I.e. if we
+        constructed a list L such that for each index i, `L[ans[i]] = perm[i]`,
+        then L would be in descending order.
+    """
     perm_sorted = sorted(perm)
+    # This is the permutation that would sort perm in ascending order
     reduced_perm = [perm_sorted.index(x) for x in perm]
     nn = len(perm)-1
     return np.array([nn-x for x in reduced_perm], dtype=np.int64)
@@ -503,13 +523,21 @@ def hamming_weight_simulation(
     for j in range(nn):
         b = bounds[j]
         N = (b.R_end-b.R_begin)*(b.C_end-b.C_begin)
-        term = np.moveaxis(terms[j], list(range(N)),
-                           reverse_permute(mapping[j][:N]))
-        term = np.moveaxis(term, list(
-            range(N, 2*N)), reverse_permute(mapping[j][N:])+N).reshape(1 << N, 1 << N)
+        term = np.moveaxis(
+            terms[j],
+            list(range(N)),
+            reverse_permute(mapping[j][:N]),
+        )
+        term = np.moveaxis(
+            term,
+            list(range(N, 2*N)),
+            reverse_permute(mapping[j][N:])+N,
+        ).reshape(1 << N, 1 << N)
         mask = get_mask(R, C, b.R_begin, b.R_end, b.C_begin, b.C_end)
         idx = compute_G_j(row, col, data, idx, term, dim, hb, hb_reverse,
                           R, C, b.R_begin, b.R_end, b.C_begin, b.C_end, mask)
+
+    print(f"Max idx: {idx}")
 
     G = csr_array((data, (row, col)), shape=(dim, dim), dtype=complex)
     G: csr_array = cast(csr_array, G+G.conj().T)
@@ -668,17 +696,15 @@ def plot_separate(d: int, theta: float, W_list: list[int], square: bool):
 
 
 def go():
-    try:
-        RC_list = [(4, 4)]
-        d = 3
-        # W_list = [3, 4, 5]
-        W_list = [2, 3, 4]
-        theta = 0.2
-        experiment_n_W(RC_list, d, theta, W_list)
-        plot_together(d, theta, W_list, True)
-        plot_separate(d, theta, W_list, True)
-    except KeyboardInterrupt:
-        exit(1)
+    RC_list=[(5,6),(6,6),(7,6),(6,8),(7,8)]
+    d = 3
+    # W_list = [3, 4, 5]
+    W_list = [4, 5, 6]
+    theta = 0.2
+    experiment_n_W(RC_list, d, theta, W_list)
+    plot_together(d, theta, W_list, True)
+    plot_separate(d, theta, W_list, True)
 
 
-go()
+if __name__ == "__main__":
+    go()
