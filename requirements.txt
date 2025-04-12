@@ -1,5 +1,14 @@
 bluequbit
 qiskit
+qiskit_aer
 quimb
+networkx  # Drawing quimb tensor networks
 matplotlib
 python-dotenv
+
+# quimb acceleration (optional)
+# mpi4py
+# petsc
+# petsc4py
+# slepc
+# slepc4py
