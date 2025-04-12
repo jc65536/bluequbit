@@ -244,7 +244,7 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Bounds]) 
                     b.R_begin <= i//C < b.R_end
                     and b.C_begin <= i % C < b.C_end
                     and b.R_begin <= j//C < b.R_end
-                    and b.C_begin <= j % C <= b.C_end
+                    and b.C_begin <= j % C < b.C_end
                 ):
                     tensors.append(qtn.Tensor(
                         g.gate.reshape((2, 2, 2, 2)),  # type: ignore
@@ -287,7 +287,7 @@ def compute_H_terms(V: GateList[Unitary], R: int, C: int, bounds: list[Bounds]) 
                     b.R_begin <= i//C < b.R_end
                     and b.C_begin <= i % C < b.C_end
                     and b.R_begin <= j//C < b.R_end
-                    and b.C_begin <= j % C <= b.C_end
+                    and b.C_begin <= j % C < b.C_end
                 ):
                     tensors.append(qtn.Tensor(
                         g.gate.reshape((2, 2, 2, 2)),  # type: ignore
