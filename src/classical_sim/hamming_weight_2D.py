@@ -1,3 +1,8 @@
+# Known issues:
+# - Divide by zero error in compute_zV0
+# - Key error in numba dict
+
+import traceback
 from typing import cast
 from collections.abc import MutableSequence
 from dataclasses import dataclass
@@ -423,10 +428,17 @@ def compute_zV0(n: int, V: GateList[Unitary], z: str) -> np.float64:
         The amplitude `|<z| V(θ) |0^n>|`. Since θ is small, this amplitude is
         close to 1.
     """
-    qc = qtn.circuit.Circuit(n)
-    for g in V:
-        qc.apply_gate_raw(g.gate, g.idx)
-    return abs(cast(np.complex128, qc.amplitude(z)))
+    for att in range(3):
+        try:
+            qc = qtn.circuit.Circuit(n)
+            for g in V:
+                qc.apply_gate_raw(g.gate, g.idx)
+            return abs(cast(np.complex128, qc.amplitude(z)))
+        except ZeroDivisionError:
+            print(f"Encountered zero division error in compute_zV0 (attempt {att + 1} / 3)")
+
+    print("All attempts failed, returning 1.0")
+    return np.float64(1.0)
 
 
 def reverse_permute(perm: list[int]) -> NDArray[np.int64]:
@@ -478,6 +490,8 @@ def hamming_weight_simulation(
     -------
     TODO
     """
+    print(f"R: {R}, C: {C}, W: {W}")
+
     l1_diff_limit = 2
     nn = R*C
     ZU = insert_Z_rotations(U, theta)
@@ -534,8 +548,13 @@ def hamming_weight_simulation(
             reverse_permute(mapping[j][N:])+N,
         ).reshape(1 << N, 1 << N)
         mask = get_mask(R, C, b.R_begin, b.R_end, b.C_begin, b.C_end)
-        idx = compute_G_j(row, col, data, idx, term, dim, hb, hb_reverse,
-                          R, C, b.R_begin, b.R_end, b.C_begin, b.C_end, mask)
+        try:
+            idx = compute_G_j(row, col, data, idx, term, dim, hb, hb_reverse,
+                            R, C, b.R_begin, b.R_end, b.C_begin, b.C_end, mask)
+        except KeyError:
+            print(hb)
+            print(hb_reverse)
+            traceback.print_exc()
 
     print(f"Max idx: {idx}")
 
