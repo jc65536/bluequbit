@@ -1,3 +1,4 @@
+from typing import cast
 import qiskit.qasm2 as qasm
 
 import bluequbit
@@ -15,8 +16,11 @@ def bq_client() -> BQClient:
     return bluequbit.init(config["API_KEY"])
 
 
-def load_qasm() -> QuantumCircuit:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("input_file")
-    ns = parser.parse_args()
-    return qasm.load(vars(ns)["input_file"])
+def load_qasm(path: str | None = None) -> QuantumCircuit:
+    if path is None:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("input_file")
+        ns = parser.parse_args()
+        path = cast(str, vars(ns)["input_file"])
+
+    return qasm.load(path)

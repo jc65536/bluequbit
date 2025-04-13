@@ -40,6 +40,7 @@ class IGate[T]:
     """
     gate: T
     idx: list[int]
+    label: str | None = None
 
 
 type GateList[T] = list[IGate[T]]
