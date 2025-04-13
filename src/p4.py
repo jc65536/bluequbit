@@ -24,6 +24,14 @@ def tensor_network():
 
 
 def load_gatelist() -> tuple[int, GateList[Unitary]]:
+    """
+    Returns
+    -------
+    N, U: tuple[int, GateList[Unitary]]
+        N is the number of qubits, U is a list of IGate[Unitary]. See
+        classical_sim.hamming_weight_2D for the definition of these data
+        structures.
+    """
     qc = load_qasm(P4_PATH)
 
     N = qc.num_qubits
@@ -43,6 +51,10 @@ def load_gatelist() -> tuple[int, GateList[Unitary]]:
 
 
 def lightcone():
+    """
+    Not used directly in the code, but allows you to compute the lightcone
+    (it'll most likely be the set of all qubits)
+    """
     N, U = load_gatelist()
     
     depth_map = np.zeros(N, dtype=np.int32)
@@ -71,6 +83,22 @@ def sim_gatelist(
     psi0: str | None = None,
     shots: int = 1000,
 ) -> dict[str, float]:
+    """
+    Parameters
+    ----------
+    N: int
+        Number of qubits
+    U: GateList[Unitary]
+        The circuit to simulate
+    psi0: str | None
+        The initial state as a bitstring
+    shots: int
+
+    Returns
+    -------
+    counts: dict[str, float]
+        For a bitstring b, counts[b] = the number of times b was sampled
+    """
     qc = Circuit(N)
 
     if psi0 is not None:
@@ -96,6 +124,18 @@ def combine_sim_counts(
     states: dict[str, float],
     shots: int = 1000,
 ) -> dict[str, float]:
+    """
+    Parameters
+    ----------
+    states: dict[str, float]
+        A dictionary of initial states (as bitstrings) and their probabilities.
+    
+    Returns
+    -------
+    all_counts: dict[str, float]
+        Maps sampled bitstrings to weighted counts. For each initial state psi,
+        its counts are weighted by states[psi].
+    """
     all_counts: dict[str, float] = {}
 
     for p0, scale in states.items():
@@ -120,19 +160,25 @@ def main():
     for i in range(len(U) // 71):
         print(f"Part {i}")
         counts = combine_sim_counts(N, U[71 * i:71 * (i + 1)], states, shots=shots)
+
+        # Some stats for your viewing pleasure
         print(f"len(counts): {len(counts)}")
         a = np.array(list(counts.values()))
         print(f"avg(counts): {np.mean(a)}")
         print(f"stddev(counts): {np.std(a)}")
 
+        # Uniform layers just scramble the states without enhancing peakedness
         if len(counts) >= 0.8 * len(states) * shots:
             print("Uniform")
+
+        # Deterministic layers have only one possible output, enhancing peakedness
         if len(counts) == 1:
             print("Deterministic")
 
         most_likely_bitstrings = {k: v for k, v in sorted(counts.items(), key=lambda t: -t[1])[:10]}
         count_sum = sum(most_likely_bitstrings.values())
         states = {k: v / count_sum for k, v in most_likely_bitstrings.items()}
+
         print(states)
         print(flush=True)
 
