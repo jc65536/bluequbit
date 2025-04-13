@@ -46,7 +46,7 @@ def load_gatelist() -> tuple[int, GateList[Unitary]]:
         label = f"{name}({", ".join(map(str, params))})"
 
         U.append(IGate(mat, idx, label))
-    
+
     return N, U
 
 
@@ -56,15 +56,15 @@ def lightcone():
     (it'll most likely be the set of all qubits)
     """
     N, U = load_gatelist()
-    
+
     depth_map = np.zeros(N, dtype=np.int32)
-    
+
     for g in U:
         if len(g.idx) == 2:
             i, j = g.idx
             depth_map[i] += 1
             depth_map[j] += 1
-    
+
     print(f"Depth map: {depth_map}")
 
     print(f"len(U): {len(U)}")
@@ -108,13 +108,13 @@ def sim_gatelist(
 
     for g in U:
         qc.apply_gate_raw(g.gate, g.idx)
-    
+
     counts: dict[str, float] = {}
 
     for b in qc.sample(shots):
         counts.setdefault(b, 0)
         counts[b] += 1
-    
+
     return counts
 
 
@@ -129,7 +129,7 @@ def combine_sim_counts(
     ----------
     states: dict[str, float]
         A dictionary of initial states (as bitstrings) and their probabilities.
-    
+
     Returns
     -------
     all_counts: dict[str, float]
@@ -159,7 +159,8 @@ def main():
 
     for i in range(len(U) // 71):
         print(f"Part {i}")
-        counts = combine_sim_counts(N, U[71 * i:71 * (i + 1)], states, shots=shots)
+        counts = combine_sim_counts(
+            N, U[71 * i:71 * (i + 1)], states, shots=shots)
 
         # Some stats for your viewing pleasure
         print(f"len(counts): {len(counts)}")
@@ -175,7 +176,8 @@ def main():
         if len(counts) == 1:
             print("Deterministic")
 
-        most_likely_bitstrings = {k: v for k, v in sorted(counts.items(), key=lambda t: -t[1])[:10]}
+        most_likely_bitstrings = {k: v for k, v in sorted(
+            counts.items(), key=lambda t: -t[1])[:10]}
         count_sum = sum(most_likely_bitstrings.values())
         states = {k: v / count_sum for k, v in most_likely_bitstrings.items()}
 
@@ -183,5 +185,34 @@ def main():
         print(flush=True)
 
 
+def pp():
+    states = {
+        '000100101101001110000110011010111101111111010011': 0.15085570167537382,
+        '000100101101001110000110011010111101111111010110': 0.11916171260433556,
+        '011100101101001110000110011010111101111111010110': 0.10571068275986309,
+        '001100101101001110000110011010111101111111010011': 0.10390920554854981,
+        '010100101101001110000110011010111101111111010110': 0.1022518465141416,
+        '000001001101001110000110011010111101111111010110': 0.08776796973518285,
+        '000001001101001110000110011010111101111111010011': 0.08532997057587222,
+        '010100101101001110000110011010111101111111010011': 0.08290398126463701,
+        '011100101101001110000110011010111101111111010011': 0.08250765627814809,
+        '001100101101001110000110011010111101111111010110': 0.07960127304389598
+    }
+
+    consensus = ""
+
+    for i in range(48):
+        a = [0.0, 0.0]
+        for x, p in states.items():
+            a[int(x[i])] += p
+        print(a)
+        if a[0] > a[1]:
+            consensus += "0"
+        else:
+            consensus += "1"
+    
+    print(consensus)
+
+
 if __name__ == "__main__":
-    main()
+    pp()
